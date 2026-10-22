@@ -53,6 +53,13 @@
       </div>
 
       <form id="setup-form" class="settings-panel">
+        <section id="shared-challenge" class="shared-challenge" hidden aria-label="朋友指定的拼圖挑戰">
+          <span class="eyebrow">A CHALLENGE JUST FOR YOU</span><h2>朋友送來的拼圖</h2>
+          <p>先看看完整照片，準備好就開始挑戰。</p>
+          <div class="fixed-count"><strong id="shared-piece-count">載入中</strong><span>片</span></div>
+          <p class="fixed-note">片數由分享者指定，無法調整。<br>每次重玩都是同一張照片、相同片數。</p>
+        </section>
+        <div id="creator-fields">
         <div class="step-heading"><span>01</span><h2>選一張有故事的照片</h2></div>
         <input id="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/avif" hidden>
         <button type="button" id="upload-button" class="upload-zone"><span class="upload-icon"><svg><use href="#i-upload"/></svg></span><strong>點擊上傳，或將照片拖曳到這裡</strong><small>JPG、PNG、WebP、AVIF · 最大 20 MB</small></button>
@@ -65,9 +72,10 @@
         <p id="count-hint" class="count-hint">自行輸入 2～5000 的整數，例如 24、100、500、1000。</p>
         <p id="count-error" class="count-error" role="status" hidden></p>
         <p class="setting-tip"><svg><use href="#i-puzzle"/></svg>拼對就會自動固定，每一片都是一點進步。</p>
+        </div>
         <div class="setup-actions"><button class="primary-button" type="submit" id="start-button">開始拼圖 <svg><use href="#i-arrow"/></svg></button><button type="button" class="secondary-button" id="save-button">儲存拼圖</button></div>
         <button type="button" id="setup-share" class="share-after-save" hidden><svg><use href="#i-share"/></svg> 分享這份拼圖給朋友 <svg><use href="#i-arrow"/></svg></button>
-        <p class="local-note" id="save-status">照片先在瀏覽器處理；分享時會暫存於分享服務 30 天。</p>
+        <a class="friend-create text-button" href="./" hidden>我也想製作自己的拼圖</a><p class="local-note" id="save-status">照片先在瀏覽器處理；分享後保留照片與設定，不自動到期。</p>
       </form>
     </section>
     <section class="how-it-feels" aria-label="遊玩步驟"><div><span>01 /</span><p>選一張照片<small>把日常，變成獨一無二的拼圖</small></p></div><div><span>02 /</span><p>享受拼湊的過程<small>拖曳、觀察，讓畫面慢慢完整</small></p></div><div><span>03 /</span><p>把快樂傳出去<small>一個連結，邀朋友一起挑戰</small></p></div></section>
@@ -93,7 +101,7 @@
   <dialog id="reference-dialog" class="reference-dialog"><button class="dialog-close icon-button" aria-label="關閉原圖" data-close><svg><use href="#i-close"/></svg></button><h2>看看完整的模樣</h2><img id="reference-image" alt="完整拼圖參考照片"><p>記住一點細節，再回去試試。</p><button class="primary-button" data-close>繼續拼圖</button></dialog>
   <dialog id="give-up-dialog"><span class="dialog-emblem warm"><svg><use href="#i-puzzle"/></svg></span><h2>今天先休息一下嗎？</h2><p>放棄後會自動拼好整張照片，這次的進度將會結束。下次再挑戰也很好。</p><div class="dialog-actions"><button class="secondary-button" data-close autofocus>再試一下</button><button id="confirm-give-up" class="primary-button">確定放棄</button></div></dialog>
   <dialog id="result-dialog"><button class="dialog-close icon-button" aria-label="查看完成的拼圖" data-close><svg><use href="#i-close"/></svg></button><span id="result-symbol" class="dialog-emblem"><svg><use href="#i-spark"/></svg></span><span class="eyebrow" id="result-eyebrow">EVERY PIECE FOUND ITS PLACE</span><h2 id="result-title">你把美好，拼完整了！</h2><p id="result-text"></p><img id="result-image" class="result-image" alt="完成的拼圖"><div class="dialog-actions"><button id="replay-button" class="secondary-button">再挑戰一次</button><button id="result-share" class="primary-button">分享拼圖 <svg><use href="#i-share"/></svg></button></div><button class="text-button result-back" id="back-to-setup">換張照片，再來一局</button></dialog>
-  <dialog id="share-dialog"><button class="dialog-close icon-button" aria-label="關閉分享" data-close><svg><use href="#i-close"/></svg></button><span class="dialog-emblem"><svg><use href="#i-share"/></svg></span><h2>把這份片刻，送給朋友。</h2><p>朋友開啟連結，就能用相同的照片和片數開始挑戰。</p><div class="share-modes" role="group" aria-label="分享照片畫質"><button id="quality-standard" aria-pressed="false"><strong>標準畫質 <span>推薦</span></strong><small>保留更多照片細節</small></button><button id="quality-compact" aria-pressed="true"><strong>省流量畫質</strong><small>縮小照片，加快載入</small></button></div><div class="share-info"><img id="share-thumbnail" alt="分享照片畫質預覽"><div><strong id="share-name"></strong><span id="share-details"></span><small id="link-size" aria-live="polite">正在產生連結…</small></div></div><label for="share-url" class="field-label">專屬分享連結</label><textarea id="share-url" rows="2" readonly aria-label="專屬分享連結"></textarea><p class="share-note" id="share-note">照片暫存 30 天，持有短網址的人都能開啟遊玩。</p><div class="dialog-actions"><button id="copy-link" class="primary-button">複製短網址 <svg><use href="#i-link"/></svg></button><button id="native-share" class="secondary-button">更多分享</button></div><button id="shorten-link" class="shorten-button"><svg><use href="#i-link"/></svg>重新建立短網址<span>連線失敗時重試</span></button><p id="short-link-status" class="dialog-note"></p></dialog>
+  <dialog id="share-dialog"><button class="dialog-close icon-button" aria-label="關閉分享" data-close><svg><use href="#i-close"/></svg></button><span class="dialog-emblem"><svg><use href="#i-share"/></svg></span><h2>把這份片刻，送給朋友。</h2><p>朋友開啟連結，就能用相同的照片和片數開始挑戰。</p><div class="share-modes" role="group" aria-label="分享照片畫質"><button id="quality-standard" aria-pressed="false"><strong>標準畫質 <span>推薦</span></strong><small>保留更多照片細節</small></button><button id="quality-compact" aria-pressed="true"><strong>省流量畫質</strong><small>縮小照片，加快載入</small></button></div><div class="share-info"><img id="share-thumbnail" alt="分享照片畫質預覽"><div><strong id="share-name"></strong><span id="share-details"></span><small id="link-size" aria-live="polite">正在產生連結…</small></div></div><label for="share-url" class="field-label">專屬分享連結</label><textarea id="share-url" rows="2" readonly aria-label="專屬分享連結"></textarea><p class="share-note" id="share-note">分享不設到期日，持有短網址的人都能開啟遊玩。</p><div class="dialog-actions"><button id="copy-link" class="primary-button">複製短網址 <svg><use href="#i-link"/></svg></button><button id="native-share" class="secondary-button">更多分享</button></div><button id="shorten-link" class="shorten-button"><svg><use href="#i-link"/></svg>重新建立短網址<span>連線失敗時重試</span></button><p id="short-link-status" class="dialog-note"></p></dialog>
   <noscript><p class="noscript">請開啟 JavaScript，才能製作及遊玩拼圖。</p></noscript>
 </body>
 </html>

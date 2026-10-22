@@ -10,6 +10,7 @@ let startedAt = 0, elapsed = 0, timer, sound = true, audioContext;
 let shareMode = 'standard', shareVersion = 0, shareCache = {}, currentPayload, shareURL = '', shortURL = '';
 let busyPhoto = false, toastTimeout, resizeTimeout, lastPointerAction = 0;
 let zoom = 1, previewTimeout, panMode = false, pan = null;
+let sharedPuzzle = null, sharedLink = false, sharedURL = '';
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function toast(message, error = false) {
@@ -20,7 +21,7 @@ function toast(message, error = false) {
   toastTimeout = setTimeout(() => { $('toast').hidden = true; }, 4500);
 }
 
-function title() { return $('puzzle-title').value.trim() || '我的專屬拼圖'; }
+function title() { if (sharedPuzzle) return sharedPuzzle.title; return $('puzzle-title').value.trim() || '我的專屬拼圖'; }
 function setMessage(message, kind = '') {
   $('game-message').textContent = message;
   $('game-message').className = kind ? `is-${kind}` : '';
@@ -53,11 +54,15 @@ function canvasImage(image, maxSide, quality, mime = 'image/jpeg') {
 function invalidateSave() {
   saved = false; shareVersion++; shareCache = {}; shortURL = '';
   $('setup-share').hidden = true;
-  $('save-status').textContent = '照片先在瀏覽器處理；分享時會暫存於分享服務 30 天。';
+  $('save-status').textContent = '照片先在瀏覽器處理；分享後保留照片與設定，不自動到期。';
   $('shared-banner').hidden = true;
 }
 
 function readCount(report = false) {
+  if (sharedLink) {
+    if (!sharedPuzzle) return false;
+    count = sharedPuzzle.count; $('piece-count').value = String(count); return true;
+  }
   const input = $('piece-count'), value = input.valueAsNumber;
   const valid = isValidCount(value);
   input.setCustomValidity(valid ? '' : `片數請輸入 ${MIN_PIECES}～${MAX_PIECES} 的整數。`);
@@ -95,7 +100,7 @@ function updatePreview() {
 }
 
 async function acceptPhoto(file) {
-  if (!file || busyPhoto) return;
+  if (sharedLink || !file || busyPhoto) return;
   if (!['image/jpeg', 'image/png', 'image/webp', 'image/avif'].includes(file.type)) return toast('請選擇 JPG、PNG、WebP 或 AVIF 圖片。', true);
   if (file.size > 20 * 1024 * 1024) return toast('照片超過 20 MB，請先縮小後再試一次。', true);
   busyPhoto = true;
@@ -123,6 +128,7 @@ async function acceptPhoto(file) {
 }
 
 async function savePuzzle(showToast = true) {
+  if (sharedLink) return !!sharedPuzzle;
   if (!photo || busyPhoto) return false;
   if (!readCount(true)) return false;
   const data = { v: 1, title: title(), count, ...(isDemo ? { demo: true } : { image: canvasImage(photo, 1200, .82) }) };
@@ -476,6 +482,16 @@ function publicBase() {
 }
 async function updateShare() {
   const version = ++shareVersion;
+  if (sharedPuzzle) {
+    $('share-url').value = sharedURL;
+    $('share-thumbnail').src = photoSource; $('share-name').textContent = title();
+    $('share-details').textContent = `${sharedPuzzle.count} 片 · 分享者指定`;
+    $('link-size').textContent = `${sharedURL.length} 個字元`;
+    $('share-note').textContent = '轉傳同一份挑戰，照片和片數都維持分享者的設定。';
+    $('short-link-status').textContent = '不自動到期，朋友不需要登入。';
+    $('copy-link').disabled = $('native-share').disabled = false;
+    return;
+  }
   shortURL = ''; shareURL = ''; $('share-url').value = '';
   $('copy-link').disabled = $('native-share').disabled = $('shorten-link').disabled = true;
   $('link-size').textContent = '正在準備分享照片…'; $('short-link-status').textContent = '';
@@ -488,7 +504,7 @@ async function updateShare() {
     $('share-thumbnail').src = payload.demo ? DEMO : payload.image;
     $('share-name').textContent = payload.title;
     $('share-details').textContent = `${count} 片 · ${shareMode === 'compact' ? '省流量畫質' : '標準畫質'}`;
-    $('share-note').textContent = '分享照片暫存 30 天，持有連結的人都能查看及遊玩。網址長度不隨照片大小增加。';
+    $('share-note').textContent = '分享不設到期日。短網址由 da.gd 提供；新建立的網址可能先顯示目的地確認頁。';
     await shortenLink();
   } catch (error) { $('link-size').textContent = '準備失敗，請關閉視窗後重試。'; toast(error.message, true); }
 }
@@ -514,21 +530,24 @@ async function shortenLink() {
     let url = shareCache[cacheKey];
     if (!url) {
       const response = await fetch(`${SHORT_LINK_API.replace(/\/$/, '')}/p`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...currentPayload, target: publicBase() }), signal: AbortSignal.timeout(20000)
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...currentPayload, target: publicBase(), requestKey: shareCache[mode + '-request'] ??= crypto.randomUUID() }), signal: AbortSignal.timeout(20000)
       });
-      if (!response.ok) throw new Error(response.status === 429 ? '建立太頻繁，請一分鐘後重試。' : '短網址服務暫時無法使用，請稍後按「重新建立短網址」。');
+      if (!response.ok) {
+        const problem = await response.json().catch(() => ({}));
+        throw new Error(response.status === 429 ? '建立太頻繁，請一分鐘後重試。' : problem.error === 'SHORTENER_UNAVAILABLE' ? '照片已保留，縮網址服務暫時無法連線；請按「重新建立短網址」。' : '短網址服務暫時無法使用，請稍後按「重新建立短網址」。');
+      }
       const result = await response.json();
       if (!/^[A-Za-z0-9_-]{12}$/.test(result.id)) throw new Error('短網址服務回傳的資料不完整。');
       url = result.url || `${publicBase()}#s=${result.id}`;
       const parsed = new URL(url);
-      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin)) throw new Error('短網址來源不正確。');
+      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin && !/^https:\/\/da\.gd\/[A-Za-z0-9_-]{3,24}$/.test(url))) throw new Error('短網址來源不正確。');
       if (version !== shareVersion) return;
       shareCache[cacheKey] = url;
     }
     if (version !== shareVersion) return;
     shortURL = url; shareURL = url; $('share-url').value = url;
     $('link-size').textContent = `${url.length} 個字元 · 真正短網址`;
-    $('short-link-status').textContent = '短網址已建立，有效期限 30 天。朋友不需要登入。';
+    $('short-link-status').textContent = '短網址已建立，不自動到期。朋友只能玩指定片數，不需要登入。';
     $('copy-link').disabled = $('native-share').disabled = false;
   } catch (error) {
     if (version !== shareVersion) return;
@@ -543,12 +562,31 @@ async function restorePayload(data, shared = false) {
   const loaded = await loadImage(src);
   // Reject hostile image dimensions before any puzzle canvases are allocated.
   if (loaded.naturalWidth * loaded.naturalHeight > 6000000) throw new Error('分享照片尺寸過大，請重新儲存後分享。');
+  if (shared) {
+    sharedPuzzle = Object.freeze({...safe}); sharedLink = true;
+    const canonical = data.shareUrl;
+    sharedURL = typeof canonical === 'string' && /^https:\/\/da\.gd\/[A-Za-z0-9_-]{3,24}$/.test(canonical) ? canonical : location.href;
+    setSharedView();
+  }
   photo = loaded; photoSource = src; isDemo = !!safe.demo; count = safe.count;
   $('piece-count').value = String(count); readCount();
   $('puzzle-title').value = safe.title;
   saved = false; shareCache = {}; updatePreview();
-  if (shared) { $('shared-banner').hidden = false; $('photo-status').textContent = '已載入朋友分享的照片。'; }
+  if (shared) { $('shared-banner').hidden = false; $('shared-banner').querySelector('span').textContent = `朋友邀你挑戰 ${count} 片拼圖！照片與片數已固定。`; $('shared-piece-count').textContent = count; }
   else { saved = true; $('setup-share').hidden = false; $('save-status').textContent = '已載入你上次儲存的拼圖。'; }
+}
+
+function setSharedView() {
+  document.body.classList.toggle('shared-mode', sharedLink);
+  $('shared-challenge').hidden = !sharedLink;
+  document.querySelector('.friend-create').hidden = !sharedLink;
+  for (const id of ['piece-count','puzzle-title','upload-button','photo-input','demo-button']) $(id).disabled = sharedLink;
+  if (sharedLink) {
+    $('back-to-setup').textContent = '回到挑戰預覽';
+    $('new-game-button').textContent = '回到挑戰預覽';
+    document.querySelector('.intro h1').textContent = '朋友的心意，一片片拼起來。';
+    document.querySelector('.intro p').textContent = '照片與片數都已準備好，留一點時間，完成這份專屬挑戰。';
+  }
 }
 
 function setPanMode(enabled) {
@@ -602,7 +640,7 @@ function bindEvents() {
   window.addEventListener('dragover', event => event.preventDefault());
   window.addEventListener('drop', event => event.preventDefault());
   $('demo-button').addEventListener('click', async () => {
-    if (busyPhoto) return;
+    if (sharedLink || busyPhoto) return;
     try { const loaded = await loadImage(DEMO); photo = loaded; photoSource = DEMO; isDemo = true; $('puzzle-title').value = '山湖之間'; $('photo-status').textContent = '還沒靈感？先用這張風景試試。'; invalidateSave(); updatePreview(); }
     catch (error) { toast(error.message, true); }
   });
@@ -655,17 +693,18 @@ function bindEvents() {
 
 async function init() {
   $('start-button').disabled = $('save-button').disabled = true;
+  const hash = new URLSearchParams(location.hash.slice(1));
+  sharedLink = hash.has('p') || hash.has('s'); setSharedView();
   bindEvents();
   try {
     photo = await loadImage(DEMO); updatePreview();
-    const hash = new URLSearchParams(location.hash.slice(1));
     if (hash.has('p')) await restorePayload(decodePayload(hash.get('p')), true);
     else if (hash.has('s')) {
       const id = hash.get('s');
       if (!SHORT_LINK_API) throw new Error('本站尚未設定短網址服務，請朋友改用一般分享連結。');
       if (!/^[A-Za-z0-9_-]{12}$/.test(id)) throw new Error('這個短網址不完整。');
       const response = await fetch(`${SHORT_LINK_API.replace(/\/$/, '')}/p/${id}`, { signal: AbortSignal.timeout(15000) });
-      if (!response.ok) throw new Error(response.status === 404 ? '這份拼圖已過期或不存在，請朋友重新分享。' : '暫時無法載入拼圖，請稍後重新整理。');
+      if (!response.ok) throw new Error(response.status === 404 ? '找不到這份拼圖，請確認連結是否正確。' : '暫時無法載入拼圖，請稍後重新整理。');
       await restorePayload(await response.json(), true);
     } else {
       try {
@@ -683,6 +722,6 @@ async function init() {
   } catch (error) {
     $('shared-banner').hidden = false; $('shared-banner').querySelector('span').textContent = error.message;
     toast(error.message, true);
-  } finally { $('start-button').disabled = $('save-button').disabled = !photo; }
+  } finally { $('start-button').disabled = sharedLink ? !sharedPuzzle : !photo; $('save-button').disabled = sharedLink || !photo; }
 }
 init();

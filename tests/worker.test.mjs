@@ -6,20 +6,21 @@ function environment() {
   const records = new Map();
   return { records, ALLOWED_ORIGIN: 'https://tester.github.io',
     CREATE_LIMITER: { limit: async () => ({ success: true }) },
-    PUZZLES: { put: async (key, value, opts) => { assert.equal(opts.expirationTtl, 2592000); records.set(key, JSON.parse(value)); }, get: async key => records.get(key) }
+    PUZZLES: { put: async (key, value, opts) => { assert.equal(opts, undefined); records.set(key, JSON.parse(value)); }, get: async key => records.get(key) }
   };
 }
 function request(path = '/p', method = 'POST', payload = { v: 1, title: '夏天', count: 24, demo: true }, origin = 'https://tester.github.io') {
   return new Request(`https://api.example${path}`, { method, headers: { Origin: origin, 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify(payload) } : {}) });
 }
-test('short-link API stores, retrieves, and expires the same puzzle', async () => {
+test('short-link API stores and retrieves puzzles without expiry, including legacy records', async () => {
   const env = environment(), created = await worker.fetch(request(), env);
   assert.equal(created.status, 201);
   const { id } = await created.json(); assert.match(id, /^[A-Za-z0-9_-]{12}$/);
   const response = await worker.fetch(request(`/p/${id}`, 'GET'), env);
   assert.deepEqual(await response.json(), { v: 1, title: '夏天', count: 24, demo: true });
   env.records.get(id).expiresAt = 0;
-  assert.equal((await worker.fetch(request(`/p/${id}`, 'GET'), env)).status, 404);
+  assert.equal((await worker.fetch(request(`/p/${id}`, 'GET'), env)).status, 200);
+  assert.equal(env.records.get(id).expiresAt, null);
 });
 test('short-link API rejects other origins, oversized data and invalid records', async () => {
   const env = environment();

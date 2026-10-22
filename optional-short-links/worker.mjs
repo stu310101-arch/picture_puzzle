@@ -1,7 +1,7 @@
 import { validatePayload } from '../core.mjs';
 
 const MAX_BYTES = 155000;
-const TTL = 30 * 24 * 60 * 60;
+
 
 async function readLimited(request) {
   if (Number(request.headers.get('content-length')) > MAX_BYTES) throw new RangeError('Too large');
@@ -48,14 +48,15 @@ export default {
         // 72 random bits; no sequence IDs and no private credentials in the browser.
         const bytes = crypto.getRandomValues(new Uint8Array(9));
         const id = btoa(String.fromCharCode(...bytes)).replaceAll('+', '-').replaceAll('/', '_');
-        const expiresAt = Date.now() + TTL * 1000;
-        await env.PUZZLES.put(id, JSON.stringify({ payload, expiresAt }), { expirationTtl: TTL });
+        const expiresAt = null;
+        await env.PUZZLES.put(id, JSON.stringify({ payload, expiresAt }));
         return json({ id, expiresAt }, 201);
       }
       const match = path.match(/^\/p\/([A-Za-z0-9_-]{12})$/);
       if (request.method === 'GET' && match) {
         const record = await env.PUZZLES.get(match[1], 'json');
-        if (!record || record.expiresAt <= Date.now()) return json({ error: 'Expired or not found' }, 404);
+        if (!record) return json({ error: 'Not found' }, 404);
+        if (record.expiresAt !== null) await env.PUZZLES.put(match[1], JSON.stringify({payload:record.payload,expiresAt:null}));
         return json(record.payload);
       }
       return json({ error: 'Not found' }, 404);

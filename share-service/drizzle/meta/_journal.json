@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1792685829070,
+      "tag": "0000_daily_miss_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1792689003884,
+      "tag": "0001_lucky_loki",
+      "breakpoints": true
+    }
+  ]
+}
