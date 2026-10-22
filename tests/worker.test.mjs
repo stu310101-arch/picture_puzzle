@@ -36,3 +36,14 @@ test('short-link API respects rate limits and handles unavailable storage', asyn
   env.PUZZLES.put = async () => { throw new Error('Offline'); };
   assert.equal((await worker.fetch(request(), env)).status, 503);
 });
+
+test('short links retain arbitrary custom piece counts', async () => {
+  const env = environment();
+  for (const count of [100, 101, 500, 1000, 5000]) {
+    const created = await worker.fetch(request('/p', 'POST', { v: 1, title: '自訂拼圖', count, demo: true }), env);
+    assert.equal(created.status, 201);
+    const { id } = await created.json();
+    const restored = await worker.fetch(request(`/p/${id}`, 'GET'), env);
+    assert.equal((await restored.json()).count, count);
+  }
+});

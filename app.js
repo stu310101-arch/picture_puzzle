@@ -1,4 +1,4 @@
-import { COUNTS, chooseGrid, createPieces, piecePath, shuffled, cellAt, placePiece, formatTime, encodePayload, decodePayload, validatePayload } from './core.mjs';
+import { MIN_PIECES, MAX_PIECES, isValidCount, chooseGrid, createPieces, cellMap, piecePath, shuffled, cellAt, placePiece, formatTime, encodePayload, decodePayload, validatePayload } from './core.mjs';
 import { SHORT_LINK_API } from './config.js';
 
 const $ = id => document.getElementById(id);
@@ -7,8 +7,9 @@ const STORE_KEY = 'piece-by-piece-v1';
 let photo, photoSource = DEMO, isDemo = true, count = 24, saved = false;
 let phase = 'setup', pieces = [], grid, layout, selected = null, drag = null, topZ = 100;
 let startedAt = 0, elapsed = 0, timer, sound = true, audioContext;
-let shareMode = 'compact', shareVersion = 0, shareCache = {}, currentPayload, shareURL = '', shortURL = '';
+let shareMode = 'standard', shareVersion = 0, shareCache = {}, currentPayload, shareURL = '', shortURL = '';
 let busyPhoto = false, toastTimeout, resizeTimeout, lastPointerAction = 0;
+let zoom = 1, previewTimeout, panMode = false, pan = null;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function toast(message, error = false) {
@@ -52,8 +53,20 @@ function canvasImage(image, maxSide, quality, mime = 'image/jpeg') {
 function invalidateSave() {
   saved = false; shareVersion++; shareCache = {}; shortURL = '';
   $('setup-share').hidden = true;
-  $('save-status').textContent = '照片在你的瀏覽器中處理，儲存後即可分享。';
+  $('save-status').textContent = '照片先在瀏覽器處理；分享時會暫存於分享服務 30 天。';
   $('shared-banner').hidden = true;
+}
+
+function readCount(report = false) {
+  const input = $('piece-count'), value = input.valueAsNumber;
+  const valid = isValidCount(value);
+  input.setCustomValidity(valid ? '' : `片數請輸入 ${MIN_PIECES}～${MAX_PIECES} 的整數。`);
+  input.setAttribute('aria-invalid', String(!valid));
+  $('count-error').hidden = valid;
+  $('count-error').textContent = valid ? '' : `請輸入 ${MIN_PIECES}～${MAX_PIECES} 的整數片數。`;
+  if (!valid) { if (report) input.reportValidity(); return false; }
+  count = value;
+  return true;
 }
 
 function updatePreview() {
@@ -68,14 +81,17 @@ function updatePreview() {
   const preview = $('preview-lines');
   preview.setAttribute('viewBox', `0 0 ${cols * 100} ${rows * 100}`);
   preview.replaceChildren();
-  const previewPieces = createPieces(cols, rows, () => .4);
+  const previewPieces = createPieces(cols, rows, () => .4, count);
+  $('preview-size').textContent = `${count} 片 · ${cols * rows === count ? `${cols} × ${rows}` : `${rows} 列・末列合併分格`}`;
+  const fragment = document.createDocumentFragment();
   for (const piece of previewPieces) {
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', piecePath(100, 100, 0, piece.edges));
+    path.setAttribute('d', piecePath(100 * piece.span, 100, 0, piece.edges, piece.span));
     path.setAttribute('transform', `translate(${piece.col * 100} ${piece.row * 100})`);
-    preview.append(path);
+    fragment.append(path);
   }
-  document.querySelectorAll('[data-count]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.count) === count)));
+  preview.append(fragment);
+  $('count-hint').textContent = `${cols * rows === count ? '自行輸入 2～5000 的整數，例如 24、100、500、1000。' : `保留確切 ${count} 片；末列部分碎片較寬，照片仍完整。`}${count >= 300 ? ' 大量碎片可放大拼圖桌操作。' : ''}`;
 }
 
 async function acceptPhoto(file) {
@@ -108,6 +124,7 @@ async function acceptPhoto(file) {
 
 async function savePuzzle(showToast = true) {
   if (!photo || busyPhoto) return false;
+  if (!readCount(true)) return false;
   const data = { v: 1, title: title(), count, ...(isDemo ? { demo: true } : { image: canvasImage(photo, 1200, .82) }) };
   let persisted = true;
   try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
@@ -120,7 +137,7 @@ async function savePuzzle(showToast = true) {
 }
 
 function calculateLayout() {
-  const stage = $('puzzle-stage'), w = stage.clientWidth, aspect = photo.naturalWidth / photo.naturalHeight;
+  const stage = $('puzzle-stage'), w = $('puzzle-viewport').clientWidth, aspect = photo.naturalWidth / photo.naturalHeight;
   const mobile = w < 700;
   let h, bw, bh, x, y;
   if (mobile) {
@@ -130,7 +147,7 @@ function calculateLayout() {
     h = Math.max(690, bh + 115 + trayRows * cellH * .94 + cellH * .6);
     x = (w - bw) / 2; y = 42;
   } else {
-    h = Math.max(600, Math.min(850, innerHeight - 270));
+    h = Math.max(180, $('puzzle-viewport').clientHeight);
     // Leave enough room for full-size pieces above and below the board too.
     const boardHeight = (h - 64) / (1 + 3.1 / grid.rows);
     bw = Math.min(w * .49, boardHeight * aspect, 780); bh = bw / aspect;
@@ -138,7 +155,28 @@ function calculateLayout() {
   }
   const pw = bw / grid.cols, ph = bh / grid.rows, pad = Math.min(pw, ph) * .25 + 2;
   stage.style.height = `${h}px`;
+  stage.style.width = `${w}px`;
   return { w, h, board: { x, y, w: bw, h: bh }, pw, ph, pad, mobile };
+}
+
+function setZoom(value, center = true) {
+  if (!layout) return;
+  const viewport = $('puzzle-viewport'), previous = zoom;
+  const focusX = (viewport.scrollLeft + viewport.clientWidth / 2) / previous;
+  const focusY = (viewport.scrollTop + viewport.clientHeight / 2) / previous;
+  zoom = Math.min(6, Math.max(1, value));
+  $('puzzle-stage').style.transform = `scale(${zoom})`;
+  $('puzzle-surface').style.width = `${layout.w * zoom}px`;
+  $('puzzle-surface').style.height = `${layout.h * zoom}px`;
+
+  $('zoom-label').textContent = `${Math.round(zoom * 100)}%`;
+  $('zoom-out').disabled = zoom <= 1; $('zoom-in').disabled = zoom >= 6;
+  if (center) viewport.scrollTo(focusX * zoom - viewport.clientWidth / 2, focusY * zoom - viewport.clientHeight / 2);
+}
+function centerBoard() {
+  if (!layout) return;
+  const viewport = $('puzzle-viewport'), b = layout.board;
+  viewport.scrollTo({ left: (b.x + b.w / 2) * zoom - viewport.clientWidth / 2, top: (b.y + b.h / 2) * zoom - viewport.clientHeight / 2, behavior: 'instant' });
 }
 
 function renderBoard() {
@@ -148,9 +186,12 @@ function renderBoard() {
   $('board-slots').style.gridTemplateColumns = `repeat(${grid.cols}, 1fr)`;
   $('board-slots').style.gridTemplateRows = `repeat(${grid.rows}, 1fr)`;
   $('board-slots').replaceChildren(); $('pieces-layer').replaceChildren();
+  $('puzzle-stage').classList.toggle('dense', count >= 300);
   for (const piece of pieces) {
     const slot = document.createElement('button');
     slot.className = 'board-slot'; slot.dataset.cell = piece.id;
+    slot.style.gridColumn = `${piece.col + 1} / span ${piece.span}`;
+    slot.style.gridRow = String(piece.row + 1);
     slot.setAttribute('aria-label', `第 ${piece.row + 1} 列第 ${piece.col + 1} 格`);
     slot.tabIndex = -1;
     slot.addEventListener('click', () => { if (selected !== null) tryPlace(selected, piece.id); });
@@ -160,12 +201,12 @@ function renderBoard() {
     button.className = 'piece'; button.dataset.piece = piece.id;
     button.setAttribute('aria-label', `拼圖碎片 ${piece.id + 1}`);
     button.setAttribute('aria-pressed', 'false');
-    button.style.width = `${pw + pad * 2}px`; button.style.height = `${ph + pad * 2}px`;
+    button.style.width = `${pw * piece.span + pad * 2}px`; button.style.height = `${ph + pad * 2}px`;
     const canvas = document.createElement('canvas');
-    const dpr = Math.min(devicePixelRatio || 1, 2);
-    canvas.width = Math.ceil((pw + pad * 2) * dpr); canvas.height = Math.ceil((ph + pad * 2) * dpr);
+    const dpr = count >= 300 ? 4 : Math.min(devicePixelRatio || 1, 2);
+    canvas.width = Math.ceil((pw * piece.span + pad * 2) * dpr); canvas.height = Math.ceil((ph + pad * 2) * dpr);
     const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
-    const path = new Path2D(piecePath(pw, ph, pad, piece.edges));
+    const path = new Path2D(piecePath(pw * piece.span, ph, pad, piece.edges, piece.span));
     ctx.save(); ctx.clip(path);
     ctx.drawImage(photo, pad - piece.col * pw, pad - piece.row * ph, board.w, board.h);
     ctx.restore(); ctx.strokeStyle = '#fffefacc'; ctx.lineWidth = .85; ctx.stroke(path);
@@ -174,8 +215,8 @@ function renderBoard() {
     button.addEventListener('pointermove', pointerMove);
     button.addEventListener('pointerup', pointerUp);
     button.addEventListener('pointercancel', pointerCancel);
-    button.addEventListener('click', () => {
-      if (performance.now() - lastPointerAction < 450) return;
+    button.addEventListener('click', event => {
+      if (event.detail > 0 && performance.now() - lastPointerAction < 450) return;
       selectPiece(piece.id, true);
     });
     button.addEventListener('keydown', event => {
@@ -187,6 +228,7 @@ function renderBoard() {
     if (piece.locked) lockPiece(piece); else if (phase !== 'playing') button.disabled = true;
   }
   scatterPieces();
+  setZoom(zoom, false);
 }
 
 function movePiece(piece, x, y) {
@@ -226,13 +268,17 @@ function scatterPieces() {
   shuffled(pieces.filter(p => !p.locked)).forEach((piece, index) => {
     const position = positions[index % positions.length];
     const jitter = mobile ? 2 : Math.min(7, pw * .1);
-    movePiece(piece, Math.max(2, Math.min(w - fullW - 2, position.x + (Math.random() - .5) * jitter)), Math.max(2, Math.min(h - fullH - 2, position.y + (Math.random() - .5) * jitter)));
+    const pieceWidth = pw * piece.span + 2 * pad;
+    let px = Math.max(2, Math.min(w - pieceWidth - 2, position.x + (Math.random() - .5) * jitter));
+    let py = Math.max(2, Math.min(h - fullH - 2, position.y + (Math.random() - .5) * jitter));
+    if (!mobile && piece.span > 1 && px + pieceWidth > b.x - 8 && px < b.x + b.w + 8 && py + fullH > b.y - 8 && py < b.y + b.h + 8) py = 5;
+    movePiece(piece, px, py);
     piece.element.style.zIndex = String(++topZ);
   });
 }
 
 function selectPiece(id, keyboard = false) {
-  if (phase !== 'playing' || pieces[id].locked) return;
+  if (phase !== 'playing' || pieces[id].locked || panMode) return;
   deselectPiece(); selected = id;
   const piece = pieces[id];
   piece.element.classList.add('selected'); piece.element.setAttribute('aria-pressed', 'true');
@@ -251,20 +297,22 @@ function deselectPiece() {
 }
 
 function handleSlotKey(event, id) {
-  let next = id;
-  if (event.key === 'ArrowLeft') next = Math.max(0, id - 1);
-  else if (event.key === 'ArrowRight') next = Math.min(count - 1, id + 1);
-  else if (event.key === 'ArrowUp') next = Math.max(0, id - grid.cols);
-  else if (event.key === 'ArrowDown') next = Math.min(count - 1, id + grid.cols);
+  const piece = pieces[id];
+  let row = piece.row, col = piece.col;
+  if (event.key === 'ArrowLeft') col = Math.max(0, col - 1);
+  else if (event.key === 'ArrowRight') col = Math.min(grid.cols - 1, col + piece.span);
+  else if (event.key === 'ArrowUp') row = Math.max(0, row - 1);
+  else if (event.key === 'ArrowDown') row = Math.min(grid.rows - 1, row + 1);
   else return;
+  const next = grid.cells[row * grid.cols + col];
   event.preventDefault(); $('board-slots').children[next].focus();
 }
 
 function pointerDown(event, piece) {
-  if (phase !== 'playing' || piece.locked || event.button !== 0 || drag) return;
+  if (phase !== 'playing' || piece.locked || panMode || event.button !== 0 || drag) return;
   event.preventDefault();
   const rect = $('puzzle-stage').getBoundingClientRect();
-  drag = { id: piece.id, pointer: event.pointerId, sx: event.clientX, sy: event.clientY, startX: piece.x, startY: piece.y, offsetX: event.clientX - rect.left - piece.x, offsetY: event.clientY - rect.top - piece.y, moved: false };
+  drag = { id: piece.id, pointer: event.pointerId, sx: event.clientX, sy: event.clientY, startX: piece.x, startY: piece.y, offsetX: (event.clientX - rect.left) / zoom - piece.x, offsetY: (event.clientY - rect.top) / zoom - piece.y, moved: false };
   selectPiece(piece.id); piece.element.setPointerCapture(event.pointerId);
 }
 function pointerMove(event) {
@@ -273,12 +321,8 @@ function pointerMove(event) {
   if (!drag.moved) return;
   const piece = pieces[drag.id], rect = $('puzzle-stage').getBoundingClientRect();
   piece.element.classList.add('dragging');
-  movePiece(piece, Math.max(-layout.pad, Math.min(layout.w - layout.pw - layout.pad, event.clientX - rect.left - drag.offsetX)), Math.max(-layout.pad, Math.min(layout.h - layout.ph - layout.pad, event.clientY - rect.top - drag.offsetY)));
-  // A touch user can drag up to the board even when the piece tray is below the fold.
-  if (event.pointerType === 'touch') {
-    if (event.clientY < 75) window.scrollBy(0, -16);
-    else if (event.clientY > innerHeight - 75) window.scrollBy(0, 16);
-  }
+  movePiece(piece, Math.max(-layout.pad, Math.min(layout.w - layout.pw * piece.span - layout.pad, (event.clientX - rect.left) / zoom - drag.offsetX)), Math.max(-layout.pad, Math.min(layout.h - layout.ph - layout.pad, (event.clientY - rect.top) / zoom - drag.offsetY)));
+
 }
 function pointerUp(event) {
   if (!drag || drag.pointer !== event.pointerId) return;
@@ -286,8 +330,9 @@ function pointerUp(event) {
   const piece = pieces[active.id]; piece.element.classList.remove('dragging');
   if (piece.element.hasPointerCapture(event.pointerId)) piece.element.releasePointerCapture(event.pointerId);
   if (!active.moved) return;
-  const target = cellAt(piece.x + layout.pad + layout.pw / 2, piece.y + layout.pad + layout.ph / 2, layout.board, grid.cols, grid.rows);
-  if (target >= 0) {
+  const cell = cellAt(piece.x + layout.pad + layout.pw * piece.span / 2, piece.y + layout.pad + layout.ph / 2, layout.board, grid.cols, grid.rows);
+  if (cell >= 0) {
+    const target = grid.cells[cell];
     const result = tryPlace(piece.id, target);
     if (result === 'wrong') movePiece(piece, active.startX, active.startY);
   } else deselectPiece();
@@ -307,7 +352,7 @@ function lockPiece(piece) {
 }
 
 function tryPlace(id, target) {
-  if (phase !== 'playing') return;
+  if (phase !== 'playing' || panMode) return;
   const result = placePiece(pieces, id, target), piece = pieces[id];
   if (result === 'locked') return result;
   if (result === 'wrong') {
@@ -372,10 +417,13 @@ function celebrate() {
 
 function startGame() {
   if (!photo || busyPhoto) return;
+  if (!readCount(true)) return;
   document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
   clearInterval(timer); deselectPiece(); drag = null;
+  setPanMode(false);
   phase = 'playing'; grid = chooseGrid(count, photo.naturalWidth / photo.naturalHeight);
-  pieces = createPieces(grid.cols, grid.rows); topZ = 100;
+  pieces = createPieces(grid.cols, grid.rows, Math.random, count); topZ = 100; zoom = 1;
+  grid.cells = cellMap(pieces, grid.cols, grid.rows);
   $('setup-view').hidden = true; $('game-view').hidden = false; document.body.classList.add('playing');
   $('game-title').textContent = title(); $('board-hint').hidden = false;
   $('finish-button').hidden = $('give-up-button').hidden = false;
@@ -383,6 +431,7 @@ function startGame() {
   $('timer').textContent = '00:00'; elapsed = 0; startedAt = performance.now();
   timer = setInterval(() => { elapsed = Math.floor((performance.now() - startedAt) / 1000); $('timer').textContent = formatTime(elapsed); }, 1000);
   renderBoard(); updateProgress();
+  $('puzzle-viewport').scrollTo(0, 0);
   setMessage('拖曳碎片到中央，或先點碎片、再點格子。鍵盤：Tab 選取 → Enter 拿起 → 方向鍵選格 → Enter 放下。');
   window.scrollTo({ top: 0, behavior: 'instant' }); unlockAudio();
 }
@@ -427,24 +476,21 @@ function publicBase() {
 }
 async function updateShare() {
   const version = ++shareVersion;
+  shortURL = ''; shareURL = ''; $('share-url').value = '';
   $('copy-link').disabled = $('native-share').disabled = $('shorten-link').disabled = true;
-  $('link-size').textContent = '正在產生連結…'; $('short-link-status').textContent = '';
+  $('link-size').textContent = '正在準備分享照片…'; $('short-link-status').textContent = '';
   $('quality-standard').setAttribute('aria-pressed', String(shareMode === 'standard'));
   $('quality-compact').setAttribute('aria-pressed', String(shareMode === 'compact'));
   try {
     const payload = shareCache[shareMode] ??= await buildPayload(shareMode);
     if (version !== shareVersion) return;
-    currentPayload = payload; shortURL = '';
-    shareURL = `${publicBase()}#p=${encodePayload(payload)}`;
-    $('share-url').value = shareURL;
+    currentPayload = payload;
     $('share-thumbnail').src = payload.demo ? DEMO : payload.image;
     $('share-name').textContent = payload.title;
-    $('share-details').textContent = `${count} 片 · ${shareMode === 'compact' ? '壓縮畫質' : '標準畫質'}`;
-    $('link-size').textContent = `${shareURL.length.toLocaleString()} 個字元${isDemo ? ' · 範例圖片共用本站檔案，連結很短' : ''}`;
-    const local = !/^https?:$/.test(location.protocol) || ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
-    $('share-note').textContent = local ? '目前是本機預覽連結。部署到 GitHub Pages 後，請在正式網址重新產生分享連結，朋友才能開啟。' : (isDemo ? '朋友開啟連結，就能用這張範例照片與相同片數開始挑戰。' : '照片包含在連結內，壓縮會降低解析度；請完整複製，部分通訊軟體可能截斷長連結。');
-    $('copy-link').disabled = $('native-share').disabled = $('shorten-link').disabled = false;
-  } catch (error) { $('link-size').textContent = '產生失敗，請關閉視窗後重試。'; toast(error.message, true); }
+    $('share-details').textContent = `${count} 片 · ${shareMode === 'compact' ? '省流量畫質' : '標準畫質'}`;
+    $('share-note').textContent = '分享照片暫存 30 天，持有連結的人都能查看及遊玩。網址長度不隨照片大小增加。';
+    await shortenLink();
+  } catch (error) { $('link-size').textContent = '準備失敗，請關閉視窗後重試。'; toast(error.message, true); }
 }
 async function openShare() {
   if (!saved && !await savePuzzle(false)) return;
@@ -453,29 +499,42 @@ async function openShare() {
 }
 async function copyLink() {
   const value = $('share-url').value;
-  try { await navigator.clipboard.writeText(value); $('copy-link').textContent = '已複製！'; setTimeout(() => { $('copy-link').textContent = '複製連結'; }, 2000); }
-  catch { $('share-url').focus(); $('share-url').select(); $('share-note').textContent = '請長按選取文字並複製，或使用 Ctrl+C／⌘C 複製完整連結。'; }
+  if (!value) return;
+  try { await navigator.clipboard.writeText(value); $('copy-link').textContent = '已複製！'; setTimeout(() => { $('copy-link').textContent = '複製短網址'; }, 2000); }
+  catch { $('share-url').focus(); $('share-url').select(); $('share-note').textContent = '請長按選取網址並複製，或使用 Ctrl+C／⌘C 複製。'; }
 }
 async function shortenLink() {
-  if (!SHORT_LINK_API) {
-    $('short-link-status').textContent = '本站尚未啟用短網址服務。請先使用上方的壓縮連結，完整複製後即可分享。';
-    return;
-  }
-  if (shortURL) { $('share-url').value = shortURL; return; }
-  $('shorten-link').disabled = true;
-  $('short-link-status').textContent = '正在把照片與設定儲存到本站的分享服務…';
+  const version = shareVersion, mode = shareMode;
+  $('copy-link').disabled = $('native-share').disabled = $('shorten-link').disabled = true;
+  $('link-size').textContent = '正在建立短網址…';
+  $('short-link-status').textContent = '照片與片數正在儲存到分享服務…';
   try {
-    const response = await fetch(`${SHORT_LINK_API.replace(/\/$/, '')}/p`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentPayload), signal: AbortSignal.timeout(15000)
-    });
-    if (!response.ok) throw new Error(response.status === 429 ? '建立太頻繁，請一分鐘後重試。' : '短網址服務暫時無法使用，請先複製一般連結。');
-    const result = await response.json();
-    if (!/^[A-Za-z0-9_-]{12}$/.test(result.id)) throw new Error('短網址服務回傳的資料不完整。');
-    shortURL = `${publicBase()}#s=${result.id}`; $('share-url').value = shortURL;
-    $('link-size').textContent = `${shortURL.length} 個字元 · 短網址`;
-    $('short-link-status').textContent = '短網址已建立，有效期限 30 天。持有連結的人都能查看這張照片。';
-  } catch (error) { $('short-link-status').textContent = error.name === 'TimeoutError' ? '連線逾時；一般連結仍可使用，請稍後重試。' : error.message; }
-  finally { $('shorten-link').disabled = false; }
+    if (!SHORT_LINK_API) throw new Error('尚未設定短網址服務，請網站管理者設定 config.js。');
+    const cacheKey = mode + '-url';
+    let url = shareCache[cacheKey];
+    if (!url) {
+      const response = await fetch(`${SHORT_LINK_API.replace(/\/$/, '')}/p`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...currentPayload, target: publicBase() }), signal: AbortSignal.timeout(20000)
+      });
+      if (!response.ok) throw new Error(response.status === 429 ? '建立太頻繁，請一分鐘後重試。' : '短網址服務暫時無法使用，請稍後按「重新建立短網址」。');
+      const result = await response.json();
+      if (!/^[A-Za-z0-9_-]{12}$/.test(result.id)) throw new Error('短網址服務回傳的資料不完整。');
+      url = result.url || `${publicBase()}#s=${result.id}`;
+      const parsed = new URL(url);
+      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin)) throw new Error('短網址來源不正確。');
+      if (version !== shareVersion) return;
+      shareCache[cacheKey] = url;
+    }
+    if (version !== shareVersion) return;
+    shortURL = url; shareURL = url; $('share-url').value = url;
+    $('link-size').textContent = `${url.length} 個字元 · 真正短網址`;
+    $('short-link-status').textContent = '短網址已建立，有效期限 30 天。朋友不需要登入。';
+    $('copy-link').disabled = $('native-share').disabled = false;
+  } catch (error) {
+    if (version !== shareVersion) return;
+    $('link-size').textContent = '短網址尚未建立';
+    $('short-link-status').textContent = error.name === 'TimeoutError' ? '連線逾時，請稍後重新建立。' : error.message;
+  } finally { if (version === shareVersion) $('shorten-link').disabled = false; }
 }
 
 async function restorePayload(data, shared = false) {
@@ -485,13 +544,54 @@ async function restorePayload(data, shared = false) {
   // Reject hostile image dimensions before any puzzle canvases are allocated.
   if (loaded.naturalWidth * loaded.naturalHeight > 6000000) throw new Error('分享照片尺寸過大，請重新儲存後分享。');
   photo = loaded; photoSource = src; isDemo = !!safe.demo; count = safe.count;
+  $('piece-count').value = String(count); readCount();
   $('puzzle-title').value = safe.title;
   saved = false; shareCache = {}; updatePreview();
   if (shared) { $('shared-banner').hidden = false; $('photo-status').textContent = '已載入朋友分享的照片。'; }
   else { saved = true; $('setup-share').hidden = false; $('save-status').textContent = '已載入你上次儲存的拼圖。'; }
 }
 
+function setPanMode(enabled) {
+  panMode = enabled; pan = null;
+  $('pan-mode').setAttribute('aria-pressed', String(enabled));
+  $('pan-mode').textContent = enabled ? '返回拼圖' : '移動畫布';
+  $('puzzle-viewport').classList.toggle('pan-mode', enabled);
+}
+
 function bindEvents() {
+  const viewport = $('puzzle-viewport');
+  $('pan-mode').addEventListener('click', () => setPanMode(!panMode));
+  $('show-tray').addEventListener('click', () => {
+    if (!layout) return;
+    const next = selected === null ? pieces.find(piece => !piece.locked) : pieces[selected];
+    if (next) viewport.scrollTo((next.x + layout.pw / 2) * zoom - viewport.clientWidth / 2, (next.y + layout.ph / 2) * zoom - viewport.clientHeight / 2);
+  });
+  viewport.addEventListener('pointerdown', event => {
+    if (!panMode || event.button !== 0 || pan) return;
+    event.preventDefault(); event.stopPropagation();
+    pan = { id: event.pointerId, x: event.clientX, y: event.clientY, left: viewport.scrollLeft, top: viewport.scrollTop };
+    viewport.setPointerCapture(event.pointerId);
+  }, true);
+  viewport.addEventListener('pointermove', event => {
+    if (!pan || pan.id !== event.pointerId) return;
+    event.preventDefault();
+    viewport.scrollTo(pan.left + pan.x - event.clientX, pan.top + pan.y - event.clientY);
+  });
+  const endPan = event => {
+    if (!pan || pan.id !== event.pointerId) return;
+    pan = null; lastPointerAction = performance.now();
+    if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
+  };
+  viewport.addEventListener('pointerup', endPan);
+  viewport.addEventListener('pointercancel', endPan);
+  viewport.addEventListener('wheel', event => event.preventDefault(), { passive: false });
+  document.addEventListener('selectstart', event => { if (!event.target.closest?.('#share-url')) event.preventDefault(); });
+  document.addEventListener('copy', event => { if (!event.target.closest?.('#share-url')) event.preventDefault(); });
+  document.addEventListener('contextmenu', event => { if (!event.target.closest?.('#share-url')) event.preventDefault(); });
+  document.addEventListener('dragstart', event => event.preventDefault());
+  document.addEventListener('touchmove', event => {
+    if (document.body.classList.contains('playing') && !event.target.closest('dialog[open]')) event.preventDefault();
+  }, { passive: false });
   $('setup-form').addEventListener('submit', event => { event.preventDefault(); startGame(); });
   $('upload-button').addEventListener('click', () => $('photo-input').click());
   $('photo-input').addEventListener('change', event => acceptPhoto(event.target.files[0]));
@@ -507,7 +607,13 @@ function bindEvents() {
     catch (error) { toast(error.message, true); }
   });
   $('puzzle-title').addEventListener('input', () => { invalidateSave(); updatePreview(); });
-  document.querySelectorAll('[data-count]').forEach(button => button.addEventListener('click', () => { count = Number(button.dataset.count); invalidateSave(); updatePreview(); }));
+  $('piece-count').addEventListener('input', () => {
+    invalidateSave(); clearTimeout(previewTimeout);
+    if (readCount()) previewTimeout = setTimeout(updatePreview, 160);
+  });
+  $('zoom-in').addEventListener('click', () => setZoom(zoom + .5));
+  $('zoom-out').addEventListener('click', () => setZoom(zoom - .5));
+  $('center-board').addEventListener('click', centerBoard);
   $('grid-toggle').addEventListener('click', () => { const visible = $('grid-toggle').getAttribute('aria-pressed') === 'true'; $('grid-toggle').setAttribute('aria-pressed', String(!visible)); $('preview-lines').hidden = visible; $('grid-toggle').querySelector('span').textContent = visible ? '顯示分割線' : '隱藏分割線'; });
   $('help-button').addEventListener('click', () => $('help-dialog').showModal());
   document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => button.closest('dialog').close()));
