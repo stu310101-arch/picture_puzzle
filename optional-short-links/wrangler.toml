@@ -1,0 +1,17 @@
+name = "piece-by-piece-links"
+main = "worker.mjs"
+compatibility_date = "2026-10-22"
+
+[vars]
+# 只有 origin，請勿加 repo 路徑或結尾斜線。
+ALLOWED_ORIGIN = "https://YOUR_USERNAME.github.io"
+
+[[kv_namespaces]]
+binding = "PUZZLES"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[[ratelimits]]
+name = "CREATE_LIMITER"
+# 使用一個在自己 Cloudflare 帳號內未使用的正整數。
+namespace_id = "10422"
+simple = { limit = 6, period = 60 }
