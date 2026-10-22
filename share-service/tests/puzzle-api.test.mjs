@@ -17,20 +17,16 @@ function fixture() {
 }
 const origin='https://tester.github.io', payload={v:1,title:'朋友的 1000 片',count:1000,image:'data:image/webp;base64,UklGRg==',target:origin+'/puzzle/',requestKey:'request-key-for-a-stable-puzzle'};
 function request(path='/p',data=payload) { return new Request('https://puzzle.example'+path,{method:data?'POST':'GET',headers:{Origin:origin,'Content-Type':'application/json'},...(data?{body:JSON.stringify(data)}:{})}); }
-let destination;
 const shortener=async (url,options)=> {
- if(url==='https://cleanuri.com/api/v1/shorten') {
-  assert.equal(options.method,'POST'); destination=options.body.get('url');
-  assert.match(destination,/^https:\/\/puzzle\.example\/s\/[A-Za-z0-9_-]{12}$/);
-  return Response.json({result_url:'https://cleanuri.com/test12'});
- }
- assert.equal(url,'https://cleanuri.com/test12');assert.equal(options.redirect,'manual');
- return new Response(null,{status:302,headers:{Location:destination}});
+ assert.equal(url,'https://spoo.me/api/v1/shorten');assert.equal(options.method,'POST');
+ const data=JSON.parse(options.body);assert.match(data.long_url,/^https:\/\/puzzle\.example\/s\/[A-Za-z0-9_-]{12}$/);
+ assert.deepEqual(Object.keys(data),['long_url']);
+ return Response.json({short_url:'https://spoo.me/test123',long_url:data.long_url});
 };
 
 test('new shares use a short domain, never expire, and preserve exact photo and count',async()=>{
  const f=fixture();const created=await puzzleApi(request(),f.env,f.ctx,shortener);assert.equal(created.status,201);
- const result=await created.json();assert.equal(result.url.length,27);assert.equal(result.expiresAt,null);
+ const result=await created.json();assert.equal(result.url.length,23);assert.equal(result.expiresAt,null);
  const response=await puzzleApi(request('/p/'+result.id,null),f.env,f.ctx,shortener);
  const restored=await response.json();assert.equal(restored.image,payload.image);assert.equal(restored.count,1000);assert.equal(restored.shareUrl,result.url);
  const redirect=await puzzleApi(request('/s/'+result.id,null),f.env,f.ctx,shortener);assert.equal(redirect.headers.get('Location'),origin+'/puzzle/#s='+result.id);
@@ -43,24 +39,28 @@ test('legacy records remain playable even after their old expiration date',async
 });
 test('shortener failures retain the photo, retries reuse one immutable puzzle',async()=>{
  const f=fixture();const bad=async()=>new Response('unavailable',{status:503});
- const failed=await puzzleApi(request(),f.env,f.ctx,bad);assert.equal(failed.status,503);const {id}=await failed.json();assert.equal(f.files.size,1);
+ const failed=await puzzleApi(request(),f.env,f.ctx,bad);assert.equal(failed.status,201);const fallback=await failed.json();const {id}=fallback;assert.equal(fallback.shortened,false);assert.equal(fallback.url,'https://puzzle.example/s/'+id);assert.equal(f.files.size,1);
+ const redirect=await puzzleApi(request('/s/'+id,null),f.env,f.ctx,bad);assert.equal(redirect.status,302);assert.equal(redirect.headers.get('Location'),origin+'/puzzle/#s='+id);
  const retried=await puzzleApi(request('/p',{...payload,count:24}),f.env,f.ctx,shortener);assert.equal((await retried.json()).id,id);
  const original=await puzzleApi(request('/p/'+id,null),f.env,f.ctx,shortener);assert.equal((await original.json()).count,1000);
  const reused=await puzzleApi(request(),f.env,f.ctx,()=>{throw Error('cached URL should not call provider');});assert.equal(reused.status,201);
  assert.equal(f.files.size,1);await Promise.all(f.jobs);assert.equal(f.sqlite.prepare('SELECT count(*) n FROM puzzles').get().n,1);f.sqlite.close();
 });
 test('shortener responses must come from the expected HTTPS short domain',async()=>{
- for(const value of ['javascript:alert(1)','https://evil.example/ab','https://cleanuri.com.evil.example/test12','https://da.gd/test12','<html>Error</html>'])await assert.rejects(shortenPublicURL('https://puzzle.example/s/test',async()=>Response.json({result_url:value})));
+ for(const value of ['javascript:alert(1)','https://evil.example/ab','https://cleanuri.com.evil.example/test12','https://da.gd/test12','<html>Error</html>'])await assert.rejects(shortenPublicURL('https://puzzle.example/s/test',async()=>Response.json({short_url:value,long_url:'https://puzzle.example/s/test'})));
 });
 
-test('confirmation pages are rejected instead of being shared as direct links',async()=>{
- await assert.rejects(shortenPublicURL('https://puzzle.example/s/abcdefghijkl',async url=>url.includes('/api/')?Response.json({result_url:'https://cleanuri.com/test12'}):new Response('Confirm destination')),/SHORTENER_REQUIRES_CONFIRMATION/);
+test('provider destination must match and visitor URLs are never probed by the server',async()=>{
+ const target='https://puzzle.example/s/abcdefghijkl';let calls=0;
+ const result=await shortenPublicURL(target,async url=>{calls++;assert.equal(url,'https://spoo.me/api/v1/shorten');return Response.json({short_url:'https://spoo.me/test123',long_url:target});});
+ assert.equal(calls,1);assert.equal(result,'https://spoo.me/test123');
+ await assert.rejects(shortenPublicURL(target,async()=>Response.json({short_url:'https://spoo.me/test123',long_url:'https://evil.example'})),/SHORTENER_INVALID_RESPONSE/);
 });
 test('old provider URLs are not forwarded and are replaced on a share retry',async()=>{
  const f=fixture();const first=await puzzleApi(request(),f.env,f.ctx,shortener);const {id}=await first.json();
  f.sqlite.prepare('UPDATE puzzles SET short_url=? WHERE id=?').run('https://da.gd/old123',id);
- const old=await puzzleApi(request('/p/'+id,null),f.env,f.ctx,shortener);assert.equal((await old.json()).shareUrl,null);
+ const old=await puzzleApi(request('/p/'+id,null),f.env,f.ctx,shortener);assert.equal((await old.json()).shareUrl,'https://puzzle.example/s/'+id);
  const renewed=await puzzleApi(request(),f.env,f.ctx,shortener);const result=await renewed.json();
- assert.equal(result.id,id);assert.equal(result.url,'https://cleanuri.com/test12');assert.equal(f.files.size,1);
+ assert.equal(result.id,id);assert.equal(result.url,'https://spoo.me/test123');assert.equal(f.files.size,1);
  await Promise.all(f.jobs);f.sqlite.close();
 });

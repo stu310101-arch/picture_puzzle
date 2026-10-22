@@ -24,7 +24,7 @@ export async function puzzleApi(request: Request, env: any, ctx: any, fetcher: t
    if (path.startsWith('/s/')) return new Response(null, {status:302,headers:{...headers,Location:record.target+'#s='+id}});
    const payload = JSON.parse(record.metadata);
    if (record.image_key) { const object = await env.BUCKET.get(record.image_key); if (!object) return respond({error:'photo unavailable'},404); payload.image = await object.text(); }
-   return respond({...payload, shareUrl:isDirectShortURL(record.short_url) ? record.short_url : null, expiresAt:null});
+   return respond({...payload, shareUrl:isDirectShortURL(record.short_url) ? record.short_url : url.origin+'/s/'+id, expiresAt:null});
   }
   if (request.method !== 'POST' || path !== '/p') return respond({error:'method not allowed'},405);
   if (!request.headers.get('Content-Type')?.startsWith('application/json')) return respond({error:'JSON required'},415);
@@ -63,8 +63,14 @@ export async function puzzleApi(request: Request, env: any, ctx: any, fetcher: t
    try {
     record.short_url=await shortenPublicURL(url.origin+'/s/'+record.id,fetcher);
     await env.DB.prepare('UPDATE puzzles SET short_url=? WHERE id=?').bind(record.short_url,record.id).run();
-   }catch{return respond({error:'SHORTENER_UNAVAILABLE',id:record.id},503);}
+   }catch(error){
+    const reason = error instanceof Error && /^SHORTENER_[A-Z_0-9]+$/.test(error.message) ? error.message : 'SHORTENER_UNAVAILABLE';
+    console.warn(reason);
+    // Saving succeeded. Always return a usable, direct link even if the
+    // optional short-domain service is unavailable; retries reuse this ID.
+    return respond({id:record.id,url:url.origin+'/s/'+record.id,shortened:false,warning:'SHORTENER_UNAVAILABLE',expiresAt:null},201);
+   }
   }
-  return respond({id:record.id,url:record.short_url,expiresAt:null},201);
+  return respond({id:record.id,url:record.short_url,shortened:true,expiresAt:null},201);
  } catch {return respond({error:'service temporarily unavailable'},503);}
 }

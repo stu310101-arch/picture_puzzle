@@ -1,22 +1,18 @@
 export function isDirectShortURL(value) {
-  return typeof value === 'string' && /^https:\/\/cleanuri\.com\/[A-Za-z0-9_-]{3,24}$/.test(value);
+  return typeof value === 'string' && /^https:\/\/spoo\.me\/[A-Za-z0-9_-]{3,64}$/.test(value);
 }
 
 export async function shortenPublicURL(destination, fetcher = fetch) {
-  const response = await fetcher('https://cleanuri.com/api/v1/shorten', {
+  const response = await fetcher('https://spoo.me/api/v1/shorten', {
     method: 'POST',
-    body: new URLSearchParams({url: destination}),
-    headers: {'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json'},
-    signal: AbortSignal.timeout(12000)
+    body: JSON.stringify({long_url: destination}),
+    headers: {'Content-Type': 'application/json', Accept: 'application/json'},
+    signal: AbortSignal.timeout(8000)
   });
-  if (!response.ok) throw new Error('SHORTENER_UNAVAILABLE');
-  const {result_url: shortURL} = await response.json();
-  if (!isDirectShortURL(shortURL)) throw new Error('SHORTENER_INVALID_RESPONSE');
-  // Only offer URLs that currently redirect straight to this puzzle.
-  // A provider landing page must never be mistaken for a working direct link.
-  const redirect = await fetcher(shortURL, {redirect: 'manual', signal: AbortSignal.timeout(4000)});
-  const direct = [301, 302, 303, 307, 308].includes(redirect.status) && redirect.headers.get('Location') === destination;
-  await redirect.body?.cancel();
-  if (!direct) throw new Error('SHORTENER_REQUIRES_CONFIRMATION');
+  if (!response.ok) throw new Error('SHORTENER_HTTP_' + response.status);
+  const {short_url: shortURL, long_url: target} = await response.json();
+  if (!isDirectShortURL(shortURL) || target !== destination) throw new Error('SHORTENER_INVALID_RESPONSE');
+  // The documented API returns the destination. Do not probe the visitor URL
+  // from a Worker: anti-bot responses can reject a link that works in browsers.
   return shortURL;
 }

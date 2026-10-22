@@ -487,6 +487,7 @@ async function updateShare() {
     $('share-thumbnail').src = photoSource; $('share-name').textContent = title();
     $('share-details').textContent = `${sharedPuzzle.count} 片 · 分享者指定`;
     $('link-size').textContent = `${sharedURL.length} 個字元`;
+    $('copy-link').textContent = sharedURL.startsWith('https://spoo.me/') ? '複製短網址' : '複製分享連結';
     $('share-note').textContent = '轉傳同一份挑戰，照片和片數都維持分享者的設定。';
     $('short-link-status').textContent = '不自動到期，朋友不需要登入。';
     $('copy-link').disabled = $('native-share').disabled = false;
@@ -516,7 +517,7 @@ async function openShare() {
 async function copyLink() {
   const value = $('share-url').value;
   if (!value) return;
-  try { await navigator.clipboard.writeText(value); $('copy-link').textContent = '已複製！'; setTimeout(() => { $('copy-link').textContent = '複製短網址'; }, 2000); }
+  try { await navigator.clipboard.writeText(value); $('copy-link').textContent = '已複製！'; setTimeout(() => { $('copy-link').textContent = value.startsWith('https://spoo.me/') ? '複製短網址' : '複製分享連結'; }, 2000); }
   catch { $('share-url').focus(); $('share-url').select(); $('share-note').textContent = '請長按選取網址並複製，或使用 Ctrl+C／⌘C 複製。'; }
 }
 async function shortenLink() {
@@ -540,14 +541,16 @@ async function shortenLink() {
       if (!/^[A-Za-z0-9_-]{12}$/.test(result.id)) throw new Error('短網址服務回傳的資料不完整。');
       url = result.url || `${publicBase()}#s=${result.id}`;
       const parsed = new URL(url);
-      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin && !/^https:\/\/cleanuri\.com\/[A-Za-z0-9_-]{3,24}$/.test(url))) throw new Error('短網址來源不正確。');
+      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin && !/^https:\/\/spoo\.me\/[A-Za-z0-9_-]{3,64}$/.test(url))) throw new Error('短網址來源不正確。');
       if (version !== shareVersion) return;
-      shareCache[cacheKey] = url;
+      if (result.shortened !== false) shareCache[cacheKey] = url;
     }
     if (version !== shareVersion) return;
     shortURL = url; shareURL = url; $('share-url').value = url;
-    $('link-size').textContent = `${url.length} 個字元 · 真正短網址`;
-    $('short-link-status').textContent = '直達短網址已建立，不自動到期。朋友點開即可遊玩指定片數，不需要登入。';
+    const compact = /^https:\/\/spoo\.me\/[A-Za-z0-9_-]{3,64}$/.test(url);
+    $('link-size').textContent = `${url.length} 個字元 · ${compact ? '直達短網址' : '直達備援連結'}`;
+    $('copy-link').textContent = compact ? '複製短網址' : '複製分享連結';
+    $('short-link-status').textContent = compact ? '直達短網址已建立，不自動到期。朋友點開即可遊玩指定片數，不需要登入。' : '拼圖已儲存，這個連結可以直接分享遊玩。縮網址服務暫時無法使用，稍後可再按「重新建立短網址」。';
     $('copy-link').disabled = $('native-share').disabled = false;
   } catch (error) {
     if (version !== shareVersion) return;
@@ -565,7 +568,11 @@ async function restorePayload(data, shared = false) {
   if (shared) {
     sharedPuzzle = Object.freeze({...safe}); sharedLink = true;
     const canonical = data.shareUrl;
-    sharedURL = typeof canonical === 'string' && /^https:\/\/cleanuri\.com\/[A-Za-z0-9_-]{3,24}$/.test(canonical) ? canonical : location.href;
+    sharedURL = location.href;
+    try {
+      const link = new URL(canonical);
+      if (/^https:\/\/spoo\.me\/[A-Za-z0-9_-]{3,64}$/.test(canonical) || (link.origin === new URL(SHORT_LINK_API).origin && /^\/s\/[A-Za-z0-9_-]{12}$/.test(link.pathname))) sharedURL = canonical;
+    } catch {}
     setSharedView();
   }
   photo = loaded; photoSource = src; isDemo = !!safe.demo; count = safe.count;
