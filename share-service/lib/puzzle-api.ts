@@ -1,5 +1,5 @@
 import { validatePayload } from './puzzle-core.mjs';
-import { shortenPublicURL } from './shortener.mjs';
+import { shortenPublicURL, isDirectShortURL } from './shortener.mjs';
 const codePattern = /^[A-Za-z0-9_-]{12}$/;
 function allowed(origin: string, self: string) {
   if (origin === self || origin === 'null') return true;
@@ -24,7 +24,7 @@ export async function puzzleApi(request: Request, env: any, ctx: any, fetcher: t
    if (path.startsWith('/s/')) return new Response(null, {status:302,headers:{...headers,Location:record.target+'#s='+id}});
    const payload = JSON.parse(record.metadata);
    if (record.image_key) { const object = await env.BUCKET.get(record.image_key); if (!object) return respond({error:'photo unavailable'},404); payload.image = await object.text(); }
-   return respond({...payload, shareUrl:record.short_url || null, expiresAt:null});
+   return respond({...payload, shareUrl:isDirectShortURL(record.short_url) ? record.short_url : null, expiresAt:null});
   }
   if (request.method !== 'POST' || path !== '/p') return respond({error:'method not allowed'},405);
   if (!request.headers.get('Content-Type')?.startsWith('application/json')) return respond({error:'JSON required'},415);
@@ -59,7 +59,7 @@ export async function puzzleApi(request: Request, env: any, ctx: any, fetcher: t
   }
   ctx.waitUntil(env.DB.prepare('DELETE FROM limits WHERE expires_at < ?').bind(now).run().catch(()=>{}));
   // A retry reuses the saved puzzle. A shortener outage must never discard its photo.
-  if(!record.short_url){
+  if(!isDirectShortURL(record.short_url)){
    try {
     record.short_url=await shortenPublicURL(url.origin+'/s/'+record.id,fetcher);
     await env.DB.prepare('UPDATE puzzles SET short_url=? WHERE id=?').bind(record.short_url,record.id).run();

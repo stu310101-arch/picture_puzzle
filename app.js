@@ -504,7 +504,7 @@ async function updateShare() {
     $('share-thumbnail').src = payload.demo ? DEMO : payload.image;
     $('share-name').textContent = payload.title;
     $('share-details').textContent = `${count} 片 · ${shareMode === 'compact' ? '省流量畫質' : '標準畫質'}`;
-    $('share-note').textContent = '分享不設到期日。短網址由 da.gd 提供；新建立的網址可能先顯示目的地確認頁。';
+    $('share-note').textContent = '分享不設到期日。朋友點開短網址，會直接進入拼圖預覽，不需要額外確認。';
     await shortenLink();
   } catch (error) { $('link-size').textContent = '準備失敗，請關閉視窗後重試。'; toast(error.message, true); }
 }
@@ -540,14 +540,14 @@ async function shortenLink() {
       if (!/^[A-Za-z0-9_-]{12}$/.test(result.id)) throw new Error('短網址服務回傳的資料不完整。');
       url = result.url || `${publicBase()}#s=${result.id}`;
       const parsed = new URL(url);
-      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin && !/^https:\/\/da\.gd\/[A-Za-z0-9_-]{3,24}$/.test(url))) throw new Error('短網址來源不正確。');
+      if (!['https:', 'http:'].includes(parsed.protocol) || (result.url && parsed.origin !== new URL(SHORT_LINK_API).origin && !/^https:\/\/cleanuri\.com\/[A-Za-z0-9_-]{3,24}$/.test(url))) throw new Error('短網址來源不正確。');
       if (version !== shareVersion) return;
       shareCache[cacheKey] = url;
     }
     if (version !== shareVersion) return;
     shortURL = url; shareURL = url; $('share-url').value = url;
     $('link-size').textContent = `${url.length} 個字元 · 真正短網址`;
-    $('short-link-status').textContent = '短網址已建立，不自動到期。朋友只能玩指定片數，不需要登入。';
+    $('short-link-status').textContent = '直達短網址已建立，不自動到期。朋友點開即可遊玩指定片數，不需要登入。';
     $('copy-link').disabled = $('native-share').disabled = false;
   } catch (error) {
     if (version !== shareVersion) return;
@@ -565,7 +565,7 @@ async function restorePayload(data, shared = false) {
   if (shared) {
     sharedPuzzle = Object.freeze({...safe}); sharedLink = true;
     const canonical = data.shareUrl;
-    sharedURL = typeof canonical === 'string' && /^https:\/\/da\.gd\/[A-Za-z0-9_-]{3,24}$/.test(canonical) ? canonical : location.href;
+    sharedURL = typeof canonical === 'string' && /^https:\/\/cleanuri\.com\/[A-Za-z0-9_-]{3,24}$/.test(canonical) ? canonical : location.href;
     setSharedView();
   }
   photo = loaded; photoSource = src; isDemo = !!safe.demo; count = safe.count;
